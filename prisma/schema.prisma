@@ -1,0 +1,887 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// LetsDoTogether — Prisma Schema
+// Database: Neon Serverless PostgreSQL + pg_trgm + unaccent + PostGIS
+// ─────────────────────────────────────────────────────────────────────────────
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  // Pooled connection URL (used at runtime via Neon's connection pooler)
+  url        = env("DATABASE_URL")
+  // Direct (non-pooled) URL — required for Prisma migrations on Neon
+  // Add ?sslmode=require to both URLs in your .env
+  directUrl  = env("DIRECT_URL")
+  extensions = [postgis, pg_trgm, unaccent]
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ENUMS
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum UserRole {
+  USER
+  MODERATOR
+  ADMIN
+}
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+  BANNED
+  PENDING_VERIFICATION
+  DELETED
+}
+
+enum OAuthProvider {
+  GOOGLE
+  FACEBOOK
+  APPLE
+}
+
+enum PrivacyLevel {
+  PUBLIC
+  CONNECTIONS_ONLY
+  PRIVATE
+}
+
+enum SkillLevel {
+  BEGINNER
+  INTERMEDIATE
+  ADVANCED
+  EXPERT
+}
+
+enum ActivityStatus {
+  DRAFT
+  ACTIVE
+  CANCELLED
+  COMPLETED
+  EXPIRED
+}
+
+enum ActivityType {
+  ONE_TIME
+  RECURRING
+}
+
+enum ParticipantStatus {
+  JOINED
+  REQUESTED
+  INVITED
+  ACCEPTED
+  REJECTED
+  LEFT
+  REMOVED
+}
+
+enum ConnectionStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+  BLOCKED
+}
+
+enum NotificationType {
+  CONNECTION_REQUEST
+  CONNECTION_ACCEPTED
+  ACTIVITY_JOIN
+  ACTIVITY_REQUEST
+  ACTIVITY_INVITE
+  ACTIVITY_ACCEPTED
+  ACTIVITY_REJECTED
+  ACTIVITY_CANCELLED
+  ACTIVITY_REMINDER
+  MESSAGE_NEW
+  RATING_RECEIVED
+  MATCH_SUGGESTION
+  SYSTEM
+}
+
+enum ReportType {
+  USER
+  ACTIVITY
+  MESSAGE
+  MEDIA
+}
+
+enum ReportReason {
+  SPAM
+  HARASSMENT
+  INAPPROPRIATE_CONTENT
+  FAKE_PROFILE
+  VIOLENCE
+  HATE_SPEECH
+  SCAM
+  OTHER
+}
+
+enum ReportStatus {
+  PENDING
+  UNDER_REVIEW
+  RESOLVED
+  DISMISSED
+}
+
+enum MediaEntityType {
+  PROFILE_AVATAR
+  PROFILE_COVER
+  ACTIVITY_COVER
+  ACTIVITY_GALLERY
+  MESSAGE_ATTACHMENT
+}
+
+enum AvailabilityType {
+  RECURRING
+  SPECIFIC_DATE
+}
+
+enum DayOfWeek {
+  MON
+  TUE
+  WED
+  THU
+  FRI
+  SAT
+  SUN
+}
+
+enum EmbeddingType {
+  USER_PROFILE
+  ACTIVITY
+}
+
+enum PaymentProvider {
+  RAZORPAY
+  STRIPE
+}
+
+enum PaymentStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  REFUNDED
+}
+
+enum AuditAction {
+  USER_SUSPEND
+  USER_BAN
+  USER_RESTORE
+  USER_DELETE
+  ACTIVITY_REMOVE
+  ACTIVITY_FLAG
+  REPORT_RESOLVE
+  REPORT_DISMISS
+  SKILL_CREATE
+  SKILL_UPDATE
+  SKILL_DELETE
+  INTEREST_CREATE
+  INTEREST_UPDATE
+  INTEREST_DELETE
+  ADMIN_LOGIN
+}
+
+enum ConversationType {
+  DIRECT
+  GROUP
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// USER & AUTH
+// ─────────────────────────────────────────────────────────────────────────────
+
+model User {
+  id          String     @id @default(uuid())
+  email       String     @unique
+  username    String     @unique
+  role        UserRole   @default(USER)
+  status      UserStatus @default(PENDING_VERIFICATION)
+  dateOfBirth DateTime
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+  deletedAt   DateTime?
+
+  // Relations
+  auth              UserAuth?
+  sessions          Session[]
+  oauthAccounts     OAuthAccount[]
+  profile           Profile?
+  location          UserLocation?
+  availability      Availability[]
+  userSkills        UserSkill[]
+  userInterests     UserInterest[]
+  activitiesCreated Activity[]           @relation("ActivityCreator")
+  participations    ActivityParticipant[]
+  connectionsFrom   Connection[]         @relation("ConnectionFrom")
+  connectionsTo     Connection[]         @relation("ConnectionTo")
+  conversations     ConversationMember[]
+  messagesSent      Message[]
+  notifications     Notification[]
+  mediaAssets       MediaAsset[]
+  ratingsGiven      Rating[]             @relation("RatingGiver")
+  ratingsReceived   Rating[]             @relation("RatingReceiver")
+  reputationSummary ReputationSummary?
+  blocksGiven       Block[]              @relation("BlockGiver")
+  blocksReceived    Block[]              @relation("BlockReceiver")
+  reportsSubmitted  Report[]             @relation("ReportSubmitter")
+  reportsTargeted   Report[]             @relation("ReportTarget")
+  policyAcceptances PolicyAcceptance[]
+  embedding         Embedding?
+  paymentAccount    PaymentAccount?
+  auditLogsActed    AuditLog[]           @relation("AuditActor")
+
+  @@index([email])
+  @@index([username])
+  @@index([status])
+  @@index([deletedAt])
+  @@map("users")
+}
+
+model UserAuth {
+  id               String    @id @default(uuid())
+  userId           String    @unique
+  passwordHash     String?
+  refreshTokenHash String?
+  emailVerifiedAt  DateTime?
+  lastLoginAt      DateTime?
+  failedLoginCount Int       @default(0)
+  lockedUntil      DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_auth")
+}
+
+model OAuthAccount {
+  id           String        @id @default(uuid())
+  userId       String
+  provider     OAuthProvider
+  providerUid  String
+  accessToken  String?
+  refreshToken String?
+  expiresAt    DateTime?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerUid])
+  @@index([userId])
+  @@map("oauth_accounts")
+}
+
+model Session {
+  id           String    @id @default(uuid())
+  userId       String
+  tokenHash    String    @unique
+  deviceName   String?
+  deviceType   String?
+  ipAddress    String?
+  userAgent    String?
+  lastActiveAt DateTime  @default(now())
+  expiresAt    DateTime
+  revokedAt    DateTime?
+  createdAt    DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("sessions")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PROFILE
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Profile {
+  id                   String       @id @default(uuid())
+  userId               String       @unique
+  displayName          String?
+  bio                  String?      @db.Text
+  avatarUrl            String?
+  coverUrl             String?
+  city                 String?
+  state                String?
+  country              String?
+  website              String?
+  linkedIn             String?
+  instagram            String?
+  locationPrivacy      PrivacyLevel @default(PUBLIC)
+  profilePrivacy       PrivacyLevel @default(PUBLIC)
+  discoveryEnabled     Boolean      @default(true)
+  maxDiscoveryDistance Int          @default(50)
+  showAge              Boolean      @default(true)
+  showOnlineStatus     Boolean      @default(true)
+  completenessScore    Int          @default(0)
+  createdAt            DateTime     @default(now())
+  updatedAt            DateTime     @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("profiles")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LOCATION (PostGIS)
+// ─────────────────────────────────────────────────────────────────────────────
+
+model UserLocation {
+  id          String                                @id @default(uuid())
+  userId      String                                @unique
+  coordinates Unsupported("geometry(Point, 4326)")
+  altitude    Float?
+  accuracy    Float?
+  city        String?
+  state       String?
+  country     String?
+  updatedAt   DateTime                              @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_locations")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AVAILABILITY
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Availability {
+  id        String           @id @default(uuid())
+  userId    String
+  type      AvailabilityType
+  dayOfWeek DayOfWeek?
+  date      DateTime?
+  startTime String
+  endTime   String
+  timezone  String           @default("UTC")
+  isActive  Boolean          @default(true)
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("availabilities")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SKILLS
+// ─────────────────────────────────────────────────────────────────────────────
+
+model SkillCategory {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  description String?
+  iconUrl     String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  skills Skill[]
+
+  @@map("skill_categories")
+}
+
+model Skill {
+  id          String   @id @default(uuid())
+  categoryId  String
+  name        String
+  slug        String   @unique
+  description String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  category       SkillCategory   @relation(fields: [categoryId], references: [id])
+  userSkills     UserSkill[]
+  activitySkills ActivitySkill[]
+
+  @@unique([categoryId, name])
+  @@index([name])
+  @@map("skills")
+}
+
+model UserSkill {
+  id        String     @id @default(uuid())
+  userId    String
+  skillId   String
+  level     SkillLevel @default(BEGINNER)
+  yearsExp  Float?
+  createdAt DateTime   @default(now())
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  skill Skill @relation(fields: [skillId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, skillId])
+  @@index([userId])
+  @@map("user_skills")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// INTERESTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+model InterestCategory {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  description String?
+  iconUrl     String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  interests Interest[]
+
+  @@map("interest_categories")
+}
+
+model Interest {
+  id          String   @id @default(uuid())
+  categoryId  String
+  name        String
+  slug        String   @unique
+  description String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  category         InterestCategory  @relation(fields: [categoryId], references: [id])
+  userInterests    UserInterest[]
+  activityInterests ActivityInterest[]
+
+  @@unique([categoryId, name])
+  @@index([name])
+  @@map("interests")
+}
+
+model UserInterest {
+  id         String   @id @default(uuid())
+  userId     String
+  interestId String
+  createdAt  DateTime @default(now())
+
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  interest Interest @relation(fields: [interestId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, interestId])
+  @@index([userId])
+  @@map("user_interests")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ACTIVITIES
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Activity {
+  id               String                                @id @default(uuid())
+  creatorId        String
+  title            String
+  description      String                                @db.Text
+  type             ActivityType                          @default(ONE_TIME)
+  status           ActivityStatus                        @default(DRAFT)
+  maxParticipants  Int                                   @default(10)
+  isPrivate        Boolean                               @default(false)
+  requiresApproval Boolean                               @default(false)
+  coordinates      Unsupported("geometry(Point, 4326)")?
+  address          String?
+  city             String?
+  state            String?
+  country          String?
+  scheduledAt      DateTime?
+  endsAt           DateTime?
+  expiresAt        DateTime?
+  coverUrl         String?
+  tags             String[]
+  searchVector     Unsupported("tsvector")?
+  createdAt        DateTime                              @default(now())
+  updatedAt        DateTime                              @updatedAt
+  deletedAt        DateTime?
+
+  creator           User                  @relation("ActivityCreator", fields: [creatorId], references: [id])
+  participants      ActivityParticipant[]
+  activityInterests ActivityInterest[]
+  activitySkills    ActivitySkill[]
+  mediaAssets       MediaAsset[]
+  ratings           Rating[]
+  reports           Report[]
+  groupConversation Conversation?
+
+  @@index([creatorId])
+  @@index([status])
+  @@index([scheduledAt])
+  @@index([deletedAt])
+  @@map("activities")
+}
+
+model ActivityParticipant {
+  id         String            @id @default(uuid())
+  activityId String
+  userId     String
+  status     ParticipantStatus @default(JOINED)
+  invitedBy  String?
+  joinedAt   DateTime?
+  leftAt     DateTime?
+  createdAt  DateTime          @default(now())
+  updatedAt  DateTime          @updatedAt
+
+  activity Activity @relation(fields: [activityId], references: [id], onDelete: Cascade)
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([activityId, userId])
+  @@index([activityId])
+  @@index([userId])
+  @@map("activity_participants")
+}
+
+model ActivityInterest {
+  activityId String
+  interestId String
+
+  activity Activity @relation(fields: [activityId], references: [id], onDelete: Cascade)
+  interest Interest @relation(fields: [interestId], references: [id], onDelete: Cascade)
+
+  @@id([activityId, interestId])
+  @@map("activity_interests")
+}
+
+model ActivitySkill {
+  activityId String
+  skillId    String
+
+  activity Activity @relation(fields: [activityId], references: [id], onDelete: Cascade)
+  skill    Skill    @relation(fields: [skillId], references: [id], onDelete: Cascade)
+
+  @@id([activityId, skillId])
+  @@map("activity_skills")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CONNECTIONS
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Connection {
+  id          String           @id @default(uuid())
+  fromUserId  String
+  toUserId    String
+  status      ConnectionStatus @default(PENDING)
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+  respondedAt DateTime?
+
+  fromUser User @relation("ConnectionFrom", fields: [fromUserId], references: [id], onDelete: Cascade)
+  toUser   User @relation("ConnectionTo", fields: [toUserId], references: [id], onDelete: Cascade)
+
+  @@unique([fromUserId, toUserId])
+  @@index([fromUserId])
+  @@index([toUserId])
+  @@index([status])
+  @@map("connections")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CHAT
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Conversation {
+  id         String           @id @default(uuid())
+  type       ConversationType @default(DIRECT)
+  isGroup    Boolean          @default(false)
+  name       String?
+  // For GROUP conversations — links back to the owning Activity (unique prevents duplicates)
+  activityId String?          @unique
+  createdAt  DateTime         @default(now())
+  updatedAt  DateTime         @updatedAt
+
+  members  ConversationMember[]
+  messages Message[]
+  activity Activity?            @relation(fields: [activityId], references: [id], onDelete: SetNull)
+
+  @@index([type])
+  @@index([activityId])
+  @@map("conversations")
+}
+
+model ConversationMember {
+  conversationId String
+  userId         String
+  joinedAt       DateTime  @default(now())
+  lastReadAt     DateTime?
+  leftAt         DateTime?
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([conversationId, userId])
+  @@index([userId])
+  @@map("conversation_members")
+}
+
+model Message {
+  id             String    @id @default(uuid())
+  conversationId String
+  senderId       String
+  content        String    @db.Text
+  mediaUrl       String?
+  isEdited       Boolean   @default(false)
+  editedAt       DateTime?
+  deletedAt      DateTime?
+  createdAt      DateTime  @default(now())
+
+  conversation Conversation    @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sender       User            @relation(fields: [senderId], references: [id])
+  receipts     MessageReceipt[]
+  reports      Report[]
+
+  @@index([conversationId, createdAt])
+  @@index([senderId])
+  @@map("messages")
+}
+
+model MessageReceipt {
+  messageId   String
+  userId      String
+  deliveredAt DateTime?
+  readAt      DateTime?
+
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@id([messageId, userId])
+  @@map("message_receipts")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// NOTIFICATIONS
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Notification {
+  id        String           @id @default(uuid())
+  userId    String
+  type      NotificationType
+  title     String
+  body      String
+  data      Json?
+  isRead    Boolean          @default(false)
+  readAt    DateTime?
+  createdAt DateTime         @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isRead])
+  @@index([createdAt])
+  @@map("notifications")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MEDIA
+// ─────────────────────────────────────────────────────────────────────────────
+
+model MediaAsset {
+  id           String          @id @default(uuid())
+  userId       String
+  entityType   MediaEntityType
+  entityId     String?
+  provider     String          @default("cloudinary")
+  publicId     String          @unique
+  url          String
+  secureUrl    String
+  format       String?
+  width        Int?
+  height       Int?
+  bytes        Int?
+  resourceType String          @default("image")
+  createdAt    DateTime        @default(now())
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  activity Activity? @relation(fields: [entityId], references: [id])
+  reports  Report[]
+
+  @@index([userId])
+  @@index([entityId])
+  @@map("media_assets")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RATINGS & REPUTATION
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Rating {
+  id         String   @id @default(uuid())
+  activityId String
+  giverId    String
+  receiverId String
+  score      Int
+  comment    String?  @db.Text
+  createdAt  DateTime @default(now())
+
+  activity Activity @relation(fields: [activityId], references: [id])
+  giver    User     @relation("RatingGiver", fields: [giverId], references: [id])
+  receiver User     @relation("RatingReceiver", fields: [receiverId], references: [id])
+
+  @@unique([activityId, giverId, receiverId])
+  @@index([receiverId])
+  @@map("ratings")
+}
+
+model ReputationSummary {
+  id               String   @id @default(uuid())
+  userId           String   @unique
+  averageScore     Float    @default(0)
+  totalRatings     Int      @default(0)
+  activitiesJoined Int      @default(0)
+  activitiesHosted Int      @default(0)
+  updatedAt        DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("reputation_summaries")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BLOCKING & REPORTING
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Block {
+  id            String   @id @default(uuid())
+  blockerId     String
+  blockedUserId String
+  reason        String?
+  createdAt     DateTime @default(now())
+
+  blocker     User @relation("BlockGiver", fields: [blockerId], references: [id], onDelete: Cascade)
+  blockedUser User @relation("BlockReceiver", fields: [blockedUserId], references: [id], onDelete: Cascade)
+
+  @@unique([blockerId, blockedUserId])
+  @@index([blockerId])
+  @@index([blockedUserId])
+  @@map("blocks")
+}
+
+model Report {
+  id               String       @id @default(uuid())
+  reporterId       String
+  reportType       ReportType
+  reason           ReportReason
+  description      String?      @db.Text
+  status           ReportStatus @default(PENDING)
+  targetUserId     String?
+  targetActivityId String?
+  targetMessageId  String?
+  targetMediaId    String?
+  reviewedBy       String?
+  reviewedAt       DateTime?
+  resolution       String?
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
+  reporter       User        @relation("ReportSubmitter", fields: [reporterId], references: [id])
+  targetUser     User?       @relation("ReportTarget", fields: [targetUserId], references: [id])
+  targetActivity Activity?   @relation(fields: [targetActivityId], references: [id])
+  targetMessage  Message?    @relation(fields: [targetMessageId], references: [id])
+  targetMedia    MediaAsset? @relation(fields: [targetMediaId], references: [id])
+
+  @@index([reporterId])
+  @@index([status])
+  @@index([reportType])
+  @@map("reports")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ADMIN & AUDIT
+// ─────────────────────────────────────────────────────────────────────────────
+
+model AuditLog {
+  id         String      @id @default(uuid())
+  actorId    String
+  action     AuditAction
+  targetId   String?
+  targetType String?
+  metadata   Json?
+  ipAddress  String?
+  userAgent  String?
+  createdAt  DateTime    @default(now())
+
+  actor User @relation("AuditActor", fields: [actorId], references: [id])
+
+  @@index([actorId])
+  @@index([action])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POLICY ACCEPTANCE
+// ─────────────────────────────────────────────────────────────────────────────
+
+model PolicyAcceptance {
+  id         String   @id @default(uuid())
+  userId     String
+  policyType String
+  version    String
+  acceptedAt DateTime @default(now())
+  ipAddress  String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, policyType, version])
+  @@index([userId])
+  @@map("policy_acceptances")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AI EMBEDDINGS
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Embedding {
+  id        String        @id @default(uuid())
+  userId    String        @unique
+  type      EmbeddingType @default(USER_PROFILE)
+  vector    Json
+  model     String        @default("text-embedding-3-small")
+  updatedAt DateTime      @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("embeddings")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PAYMENTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+model PaymentAccount {
+  id                String          @id @default(uuid())
+  userId            String          @unique
+  provider          PaymentProvider
+  providerAccountId String?
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  payments Payment[]
+
+  @@map("payment_accounts")
+}
+
+model Payment {
+  id                String        @id @default(uuid())
+  paymentAccountId  String
+  providerOrderId   String?
+  providerPaymentId String?
+  amount            Int
+  currency          String        @default("INR")
+  status            PaymentStatus @default(PENDING)
+  metadata          Json?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  account PaymentAccount @relation(fields: [paymentAccountId], references: [id])
+
+  @@index([paymentAccountId])
+  @@index([status])
+  @@map("payments")
+}
