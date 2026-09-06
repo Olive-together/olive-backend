@@ -1,0 +1,1 @@
+const { PrismaClient } = require('@prisma/client'); const prisma = new PrismaClient(); prisma.activity.findMany({ orderBy: { createdAt: 'desc' }, take: 2 }).then(a => console.log(JSON.stringify(a, null, 2))).catch(console.error).finally(() => prisma.$disconnect());
