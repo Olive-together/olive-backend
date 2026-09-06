@@ -1,0 +1,84 @@
+version: '3.9'
+
+services:
+  postgres:
+    image: postgis/postgis:16-3.4-alpine
+    container_name: ldt_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: letsdo_together
+      POSTGRES_USER: ldt_user
+      POSTGRES_PASSWORD: ldt_password
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/01-init.sql
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ldt_user -d letsdo_together']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ldt_network
+
+  redis:
+    image: redis:7-alpine
+    container_name: ldt_redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --requirepass ""
+    ports:
+      - '6379:6379'
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ldt_network
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: development
+    container_name: ldt_app
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://ldt_user:ldt_password@postgres:5432/letsdo_together?schema=public
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      BULL_REDIS_HOST: redis
+      BULL_REDIS_PORT: 6379
+    ports:
+      - '3000:3000'
+      - '9229:9229'
+    volumes:
+      - .:/app
+      - /app/node_modules
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://localhost:3000/health/live || exit 1']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - ldt_network
+    command: npm run start:dev
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  ldt_network:
+    driver: bridge
