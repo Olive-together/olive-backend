@@ -7,10 +7,14 @@ import {
   ForbiddenException,
   NotFoundException,
 } from '../common/exceptions/app.exception';
+import { NotificationsService } from '../notifications/notifications.service';
 
 @Injectable()
 export class ConnectionsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly notifications: NotificationsService,
+  ) {}
 
   private async checkBlocked(userId: string, targetId: string) {
     const block = await this.prisma.block.findFirst({
@@ -40,21 +44,25 @@ export class ConnectionsService {
 
     const conn = await this.prisma.connection.create({ data: { fromUserId, toUserId } });
 
-    const fromUser = await this.prisma.user.findUnique({ where: { id: fromUserId }, include: { profile: true } });
+    const fromUser = await this.prisma.user.findUnique({
+      where: { id: fromUserId },
+      include: { profile: true },
+    });
     const senderName = fromUser?.profile?.displayName ?? fromUser?.username ?? 'Someone';
 
-    await this.prisma.notification.create({
-      data: {
-        userId: toUserId,
-        type: NotificationType.CONNECTION_REQUEST,
-        title: 'New Connection Request',
-        body: `${senderName} wants to connect with you`,
-        data: {
-          referenceId: conn.id,
-          referenceType: 'CONNECTION',
-        }
-      }
-    });
+    // Notify recipient of the new request
+    await this.notifications.createNotification(
+      toUserId,
+      NotificationType.CONNECTION_REQUEST,
+      'New Connection Request',
+      `${senderName} wants to connect with you`,
+      {
+        actorId: fromUserId,
+        actorName: senderName,
+        referenceId: conn.id,
+        referenceType: 'CONNECTION',
+      },
+    );
 
     return conn;
   }
@@ -64,10 +72,30 @@ export class ConnectionsService {
       where: { id: connectionId, toUserId: userId, status: ConnectionStatus.PENDING },
     });
     if (!conn) throw new NotFoundException('Connection request');
-    return this.prisma.connection.update({
+
+    const updated = await this.prisma.connection.update({
       where: { id: connectionId },
       data: { status: ConnectionStatus.ACCEPTED, respondedAt: new Date() },
     });
+
+    // Notify the original requester that their request was accepted
+    try {
+      const acceptor = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { username: true, profile: { select: { displayName: true } } },
+      });
+      const acceptorName = acceptor?.profile?.displayName ?? acceptor?.username ?? 'Someone';
+      await this.notifications.notifyConnectionAccepted(
+        conn.fromUserId,
+        userId,
+        acceptorName,
+        connectionId,
+      );
+    } catch {
+      // Non-fatal — connection is accepted regardless
+    }
+
+    return updated;
   }
 
   async reject(userId: string, connectionId: string) {

@@ -90,6 +90,10 @@ export class ChatService {
   /**
    * Returns the group conversation for an activity, verifying that the
    * requesting user is a valid participant of that activity.
+   *
+   * Self-healing: if no group conversation exists yet (e.g. activity created
+   * before this feature, or silent failure at creation time), we create it
+   * on-the-fly and backfill all current JOINED participants as members.
    */
   async getActivityGroupConversation(userId: string, activityId: string) {
     // Verify user is an active participant of the activity
@@ -103,8 +107,61 @@ export class ChatService {
       throw new ForbiddenException('You are not an active participant of this activity');
     }
 
-    const conversation = await this.prisma.conversation.findUnique({
+    // Fetch the activity so we have the title for conversation naming
+    const activity = await this.prisma.activity.findUnique({
+      where: { id: activityId },
+      select: { id: true, title: true, creatorId: true },
+    });
+    if (!activity) throw new NotFoundException('Activity', activityId);
+
+    // ── Self-healing group conversation creation ──────────────────────────────
+    // Try to find an existing conv; if absent create it and backfill members.
+    let convRow = await this.prisma.conversation.findUnique({
       where: { activityId },
+      select: { id: true },
+    });
+
+    if (!convRow) {
+      // Create the group conversation
+      convRow = await this.prisma.conversation.create({
+        data: {
+          type: ConversationType.GROUP,
+          isGroup: true,
+          name: activity.title,
+          activityId,
+        },
+        select: { id: true },
+      });
+
+      // Backfill ALL currently joined participants (including the creator)
+      const joinedParticipants = await this.prisma.activityParticipant.findMany({
+        where: {
+          activityId,
+          status: { in: ['JOINED', 'ACCEPTED'] as any },
+        },
+        select: { userId: true },
+      });
+
+      await this.prisma.conversationMember.createMany({
+        data: joinedParticipants.map((p) => ({
+          conversationId: convRow!.id,
+          userId: p.userId,
+        })),
+        skipDuplicates: true,
+      });
+    } else {
+      // Conversation exists — make sure the current user is a member
+      // (handles cases where they joined the activity but were never added to the conv)
+      await this.prisma.conversationMember.upsert({
+        where: { conversationId_userId: { conversationId: convRow.id, userId } },
+        create: { conversationId: convRow.id, userId },
+        update: { leftAt: null, joinedAt: new Date() },
+      });
+    }
+
+    // Return the full conversation with members, last message, and activity info
+    const conversation = await this.prisma.conversation.findUnique({
+      where: { id: convRow.id },
       include: {
         members: {
           where: { leftAt: null },
@@ -236,4 +293,33 @@ export class ChatService {
     });
     return { message: 'Marked as read' };
   }
+
+  // ─── Notification Helper ───────────────────────────────────────────────────
+
+  /**
+   * Lightweight query used by ChatGateway to determine conversation type
+   * and fetch member info for DM notification targeting.
+   */
+  async getConversationTypeAndMembers(conversationId: string) {
+    return this.prisma.conversation.findUnique({
+      where: { id: conversationId },
+      select: {
+        type: true,
+        members: {
+          select: {
+            userId: true,
+            leftAt: true,
+            user: {
+              select: {
+                id: true,
+                username: true,
+                profile: { select: { displayName: true } },
+              },
+            },
+          },
+        },
+      },
+    });
+  }
 }
+
