@@ -1,6 +1,15 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { ActivityStatus, ActivityType, ParticipantStatus, Prisma } from '@prisma/client';
+import {
+  ActivityStatus,
+  ActivityType,
+  AuditAction,
+  NotificationType,
+  ParticipantStatus,
+  Prisma,
+  UserRole,
+} from '@prisma/client';
+import { Request } from 'express';
 import {
   NotFoundException,
   ForbiddenException,
@@ -8,10 +17,13 @@ import {
   ConflictException,
 } from '../common/exceptions/app.exception';
 import { ChatService } from '../chat/chat.service';
+import { NotificationsService } from '../notifications/notifications.service';
+import { ModerationService } from '../moderation/moderation.service';
 
 export interface CreateActivityDto {
   title: string;
   description: string;
+  category?: string;
   type?: ActivityType;
   maxParticipants?: number;
   isPrivate?: boolean;
@@ -37,11 +49,21 @@ export class ActivitiesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly chat: ChatService,
+    private readonly notifications: NotificationsService,
+    private readonly moderation: ModerationService,
   ) {}
 
   // ─── CRUD ────────────────────────────────────────────────────────────────
 
   async create(userId: string, dto: CreateActivityDto) {
+    const tags = [
+      ...new Set(
+        [...(dto.category ? [dto.category] : []), ...(dto.tags ?? [])]
+          .map((tag) => tag.trim())
+          .filter(Boolean),
+      ),
+    ];
+
     const activity = await this.prisma.activity.create({
       data: {
         creatorId: userId,
@@ -58,7 +80,7 @@ export class ActivitiesService {
         scheduledAt: dto.scheduledAt ? new Date(dto.scheduledAt) : undefined,
         endsAt: dto.endsAt ? new Date(dto.endsAt) : undefined,
         expiresAt: dto.expiresAt ? new Date(dto.expiresAt) : undefined,
-        tags: dto.tags ?? [],
+        tags,
         status: ActivityStatus.ACTIVE,
         activityInterests: dto.interestIds?.length
           ? { create: dto.interestIds.map((id) => ({ interestId: id })) }
@@ -104,7 +126,9 @@ export class ActivitiesService {
       await this.chat.addMemberToConversation(convId, userId);
     } catch (err) {
       // Non-fatal — activity is already created; log and continue
-      this.logger.error(`Failed to create group conversation for activity ${activity.id}: ${(err as Error).message}`);
+      this.logger.error(
+        `Failed to create group conversation for activity ${activity.id}: ${(err as Error).message}`,
+      );
     }
 
     return this.findOne(activity.id);
@@ -120,9 +144,10 @@ export class ActivitiesService {
     cursor?: string;
     limit?: number;
     timeline?: 'upcoming' | 'past';
+    userId?: string; // optional — enriches each item with isJoined
   }) {
     const limit = filters.limit ? Number(filters.limit) : 20;
-    
+
     let geoIds: string[] | undefined;
     if (filters.lat && filters.lng) {
       const radiusMeters = (filters.radiusKm ? Number(filters.radiusKm) : 20) * 1000;
@@ -141,32 +166,45 @@ export class ActivitiesService {
       deletedAt: null,
       isPrivate: false,
       ...(geoIds ? { id: { in: geoIds } } : {}),
-      ...(filters.status ? { status: filters.status } : { status: ActivityStatus.ACTIVE }),
       ...(filters.city ? { city: { contains: filters.city, mode: 'insensitive' } } : {}),
       ...(filters.state ? { state: { contains: filters.state, mode: 'insensitive' } } : {}),
     };
 
     if (filters.timeline === 'upcoming') {
-      whereClause.OR = [
-        { scheduledAt: { gte: new Date() } },
-        { scheduledAt: null }
-      ];
+      // Upcoming: only ACTIVE activities whose date is in the future
+      whereClause.status = ActivityStatus.ACTIVE;
+      whereClause.scheduledAt = { gte: new Date() };
     } else if (filters.timeline === 'past') {
-      whereClause.scheduledAt = { lt: new Date() };
+      // Past: COMPLETED or EXPIRED, OR ACTIVE activities whose date passed (cron lag), OR TBD activities (no date)
+      whereClause.OR = [
+        { status: { in: [ActivityStatus.COMPLETED, ActivityStatus.EXPIRED] } },
+        { status: ActivityStatus.ACTIVE, scheduledAt: { lt: new Date() } },
+        { status: ActivityStatus.ACTIVE, scheduledAt: null },
+      ];
+    } else {
+      // Default (no timeline): only ACTIVE
+      whereClause.status = filters.status ?? ActivityStatus.ACTIVE;
     }
 
     const activities = await this.prisma.activity.findMany({
       where: whereClause,
       include: {
-        creator: { select: { id: true, username: true, profile: { select: { displayName: true, avatarUrl: true } } } },
+        creator: {
+          select: {
+            id: true,
+            username: true,
+            profile: { select: { displayName: true, avatarUrl: true } },
+          },
+        },
         activityInterests: { include: { interest: true } },
         _count: { select: { participants: { where: { status: ParticipantStatus.JOINED } } } },
       },
-      orderBy: filters.timeline === 'upcoming' 
-        ? [{ scheduledAt: 'asc' }, { id: 'asc' }]
-        : filters.timeline === 'past'
-        ? [{ scheduledAt: 'desc' }, { id: 'asc' }]
-        : [{ createdAt: 'desc' }, { id: 'asc' }],
+      orderBy:
+        filters.timeline === 'upcoming'
+          ? [{ scheduledAt: 'asc' }, { id: 'asc' }]
+          : filters.timeline === 'past'
+            ? [{ scheduledAt: 'desc' }, { id: 'asc' }]
+            : [{ createdAt: 'desc' }, { id: 'asc' }],
       take: limit + 1,
       ...(filters.cursor ? { cursor: { id: filters.cursor }, skip: 1 } : {}),
     });
@@ -176,30 +214,56 @@ export class ActivitiesService {
     const nextCursor = hasMore ? items[items.length - 1].id : undefined;
 
     if (items.length > 0) {
-      const ids = items.map(a => a.id);
-      const coords = await this.prisma.$queryRaw<{ id: string, lat: number, lng: number }[]>`
+      const ids = items.map((a) => a.id);
+
+      // Batch-fetch coordinates for all items in one query
+      const coords = await this.prisma.$queryRaw<{ id: string; lat: number; lng: number }[]>`
         SELECT id, ST_Y(coordinates::geometry) as lat, ST_X(coordinates::geometry) as lng 
         FROM activities 
         WHERE id IN (${Prisma.join(ids)}) AND coordinates IS NOT NULL
       `;
-      const coordMap = new Map(coords.map(c => [c.id, c]));
-      items.forEach((item: any) => {
+      const coordMap = new Map(coords.map((c) => [c.id, c]));
+
+      // Batch-fetch which of these activities the user has joined
+      let joinedSet = new Set<string>();
+      if (filters.userId) {
+        const participations = await this.prisma.activityParticipant.findMany({
+          where: {
+            activityId: { in: ids },
+            userId: filters.userId,
+            status: { in: [ParticipantStatus.JOINED, ParticipantStatus.ACCEPTED] },
+          },
+          select: { activityId: true },
+        });
+        joinedSet = new Set(participations.map((p) => p.activityId));
+      }
+
+      (
+        items as ((typeof activities)[0] & { lat?: number; lng?: number; isJoined?: boolean })[]
+      ).forEach((item) => {
         const c = coordMap.get(item.id);
         if (c) {
           item.lat = c.lat;
           item.lng = c.lng;
         }
+        item.isJoined = joinedSet.has(item.id);
       });
     }
 
     return { items, nextCursor, hasMore };
   }
 
-  async findOne(id: string) {
+  async findOne(id: string, userId?: string) {
     const activity = await this.prisma.activity.findFirst({
       where: { id, deletedAt: null },
       include: {
-        creator: { select: { id: true, username: true, profile: { select: { displayName: true, avatarUrl: true } } } },
+        creator: {
+          select: {
+            id: true,
+            username: true,
+            profile: { select: { displayName: true, avatarUrl: true } },
+          },
+        },
         activityInterests: { include: { interest: { include: { category: true } } } },
         activitySkills: { include: { skill: { include: { category: true } } } },
         _count: { select: { participants: { where: { status: ParticipantStatus.JOINED } } } },
@@ -208,13 +272,39 @@ export class ActivitiesService {
       },
     });
     if (!activity) throw new NotFoundException('Activity', id);
-    return activity;
+
+    // Enrich with PostGIS coordinates (stored in geography column, not standard Prisma columns)
+    const coordRows = await this.prisma.$queryRaw<{ lat: number; lng: number }[]>`
+      SELECT ST_Y(coordinates::geometry) as lat, ST_X(coordinates::geometry) as lng
+      FROM activities WHERE id = ${id} AND coordinates IS NOT NULL
+    `;
+    const coords = coordRows[0] ?? null;
+
+    // Compute isJoined for the requesting user
+    let isJoined = false;
+    if (userId) {
+      const participation = await this.prisma.activityParticipant.findUnique({
+        where: { activityId_userId: { activityId: id, userId } },
+        select: { status: true },
+      });
+      isJoined =
+        participation?.status === ParticipantStatus.JOINED ||
+        participation?.status === ParticipantStatus.ACCEPTED;
+    }
+
+    return {
+      ...activity,
+      latitude: coords?.lat ?? null,
+      longitude: coords?.lng ?? null,
+      isJoined,
+    };
   }
 
   async update(userId: string, id: string, dto: Partial<CreateActivityDto>) {
     const activity = await this.prisma.activity.findUnique({ where: { id } });
     if (!activity) throw new NotFoundException('Activity', id);
-    if (activity.creatorId !== userId) throw new ForbiddenException('Only the creator can update this activity');
+    if (activity.creatorId !== userId)
+      throw new ForbiddenException('Only the creator can update this activity');
 
     return this.prisma.activity.update({
       where: { id },
@@ -232,21 +322,124 @@ export class ActivitiesService {
     });
   }
 
-  async remove(userId: string, id: string) {
-    const activity = await this.prisma.activity.findUnique({ where: { id } });
+  async remove(userId: string, userRole: string, id: string, reason?: string, req?: Request) {
+    const activity = await this.prisma.activity.findFirst({
+      where: { id, deletedAt: null },
+      select: {
+        id: true,
+        title: true,
+        creatorId: true,
+        status: true,
+      },
+    });
     if (!activity) throw new NotFoundException('Activity', id);
-    if (activity.creatorId !== userId) throw new ForbiddenException('Only the creator can delete this activity');
-    await this.prisma.activity.update({ where: { id }, data: { deletedAt: new Date(), status: ActivityStatus.CANCELLED } });
-    // Group conversation history is preserved (option a) — no cascade delete.
+    const isAdmin = userRole === UserRole.ADMIN;
+    if (!isAdmin && activity.creatorId !== userId) {
+      throw new ForbiddenException('Only the creator or an administrator can delete this activity');
+    }
+
+    await this.prisma.activity.update({
+      where: { id },
+      data: { deletedAt: new Date(), status: ActivityStatus.CANCELLED },
+    });
+
+    // Fetch all joined participants (excluding the actor — they already know)
+    const joinedParticipants = await this.prisma.activityParticipant.findMany({
+      where: { activityId: id, status: ParticipantStatus.JOINED, userId: { not: userId } },
+      select: { userId: true },
+    });
+    const participantIds = joinedParticipants.map((p) => p.userId);
+
+    if (isAdmin && activity.creatorId !== userId) {
+      const trimmedReason = reason?.trim();
+
+      // Notify the host
+      await this.notifications.createNotification(
+        activity.creatorId,
+        NotificationType.ACTIVITY_CANCELLED,
+        'Activity Removed',
+        trimmedReason
+          ? `Your activity "${activity.title}" was removed by an administrator. Reason: ${trimmedReason}`
+          : `Your activity "${activity.title}" was removed by an administrator.`,
+        { referenceId: id, referenceType: 'ACTIVITY', adminRemoved: true },
+      );
+
+      // Notify all joined participants (except host who was already notified above)
+      const participantsToNotify = participantIds.filter((pid) => pid !== activity.creatorId);
+      await Promise.allSettled(
+        participantsToNotify.map((participantId) =>
+          this.notifications.createNotification(
+            participantId,
+            NotificationType.ACTIVITY_CANCELLED,
+            'Activity Cancelled',
+            trimmedReason
+              ? `The activity "${activity.title}" was removed by an administrator. Reason: ${trimmedReason}`
+              : `The activity "${activity.title}" has been removed by an administrator.`,
+            { referenceId: id, referenceType: 'ACTIVITY', adminRemoved: true },
+          ),
+        ),
+      );
+
+      await this.moderation.recordAuditLog({
+        actorId: userId,
+        action: AuditAction.ACTIVITY_REMOVE,
+        targetId: id,
+        targetType: 'ACTIVITY',
+        metadata: {
+          activityTitle: activity.title,
+          previousStatus: activity.status,
+          reason: trimmedReason ?? 'No reason provided',
+          removedFrom: 'GLOBAL_ACTIVITY_ROUTE',
+        },
+        req,
+      });
+    } else {
+      // Host deleted their own activity — notify all participants
+      const trimmedMessage = reason?.trim();
+      await Promise.allSettled(
+        participantIds.map((participantId) =>
+          this.notifications.createNotification(
+            participantId,
+            NotificationType.ACTIVITY_CANCELLED,
+            `"${activity.title}" has been cancelled`,
+            trimmedMessage
+              ? `The host cancelled this activity. Their message: "${trimmedMessage}"`
+              : `The host has cancelled the activity "${activity.title}".`,
+            { referenceId: id, referenceType: 'ACTIVITY', hostCancelled: true },
+          ),
+        ),
+      );
+    }
+
+    // Group conversation history is preserved — no cascade delete.
     // Members keep read access; the activity status in the conv payload signals it's cancelled.
-    return { message: 'Activity cancelled' };
+    return { message: isAdmin ? 'Activity removed' : 'Activity cancelled' };
   }
 
   // ─── Participation ───────────────────────────────────────────────────────
 
   async join(userId: string, activityId: string) {
     const activity = await this.findOne(activityId);
-    if (activity.status !== ActivityStatus.ACTIVE) throw new BadRequestException('Activity is not accepting participants');
+
+    // Block joining completed or expired activities
+    if (
+      activity.status === ActivityStatus.COMPLETED ||
+      activity.status === ActivityStatus.EXPIRED
+    ) {
+      throw new BadRequestException(
+        'This activity has already taken place and is no longer joinable',
+      );
+    }
+    if (activity.status !== ActivityStatus.ACTIVE) {
+      throw new BadRequestException('Activity is not accepting participants');
+    }
+
+    // Block joining if the scheduled time has passed (cron may not have run yet)
+    if (activity.scheduledAt && new Date(activity.scheduledAt) < new Date()) {
+      throw new BadRequestException(
+        'This activity has already started or ended and is no longer joinable',
+      );
+    }
 
     const count = await this.prisma.activityParticipant.count({
       where: { activityId, status: ParticipantStatus.JOINED },
@@ -276,6 +469,26 @@ export class ActivitiesService {
 
     // ── Add to group conversation ──────────────────────────────────────────
     await this.syncGroupConvMembership(activityId, userId, 'add');
+
+    // ── Notify activity creator ────────────────────────────────────────────
+    try {
+      const joiningUser = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { username: true, profile: { select: { displayName: true } } },
+      });
+      const joinerName = joiningUser?.profile?.displayName ?? joiningUser?.username ?? 'Someone';
+      await this.notifications.notifyActivityJoin(
+        activity.creatorId,
+        userId,
+        joinerName,
+        activityId,
+        activity.title,
+      );
+    } catch (err) {
+      this.logger.error(
+        `Failed to send join notification for activity ${activityId}: ${(err as Error).message}`,
+      );
+    }
 
     return result;
   }
@@ -308,7 +521,8 @@ export class ActivitiesService {
 
   async acceptRequest(creatorId: string, activityId: string, requestUserId: string) {
     const activity = await this.findOne(activityId);
-    if (activity.creatorId !== creatorId) throw new ForbiddenException('Only creator can accept requests');
+    if (activity.creatorId !== creatorId)
+      throw new ForbiddenException('Only creator can accept requests');
 
     await this.prisma.activityParticipant.update({
       where: { activityId_userId: { activityId, userId: requestUserId } },
@@ -328,7 +542,8 @@ export class ActivitiesService {
 
   async rejectRequest(creatorId: string, activityId: string, requestUserId: string) {
     const activity = await this.findOne(activityId);
-    if (activity.creatorId !== creatorId) throw new ForbiddenException('Only creator can reject requests');
+    if (activity.creatorId !== creatorId)
+      throw new ForbiddenException('Only creator can reject requests');
 
     await this.prisma.activityParticipant.update({
       where: { activityId_userId: { activityId, userId: requestUserId } },
@@ -343,7 +558,12 @@ export class ActivitiesService {
 
     return this.prisma.activityParticipant.upsert({
       where: { activityId_userId: { activityId, userId: invitedUserId } },
-      create: { activityId, userId: invitedUserId, status: ParticipantStatus.INVITED, invitedBy: creatorId },
+      create: {
+        activityId,
+        userId: invitedUserId,
+        status: ParticipantStatus.INVITED,
+        invitedBy: creatorId,
+      },
       update: { status: ParticipantStatus.INVITED, invitedBy: creatorId },
     });
   }
@@ -353,13 +573,17 @@ export class ActivitiesService {
       where: { activityId, status: { in: [ParticipantStatus.JOINED, ParticipantStatus.ACCEPTED] } },
       include: {
         user: {
-          select: { id: true, username: true, profile: { select: { displayName: true, avatarUrl: true } } },
+          select: {
+            id: true,
+            username: true,
+            profile: { select: { displayName: true, avatarUrl: true } },
+          },
         },
       },
     });
   }
 
-  async findNearby(lat: number, lng: number, radiusKm: number, userId: string) {
+  async findNearby(lat: number, lng: number, radiusKm: number, _userId: string) {
     const radiusMeters = radiusKm * 1000;
 
     interface NearbyActivityRow {

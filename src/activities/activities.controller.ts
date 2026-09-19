@@ -1,10 +1,11 @@
 import {
-  Controller, Get, Post, Patch, Delete, Body, Param, Query, HttpCode, HttpStatus,
+  Controller, Get, Post, Patch, Delete, Body, Param, Query, HttpCode, HttpStatus, Req,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth, ApiQuery } from '@nestjs/swagger';
 import { ActivitiesService, CreateActivityDto } from './activities.service';
-import { CurrentUser } from '../common/decorators/current-user.decorator';
+import { CurrentUser, JwtPayload } from '../common/decorators/current-user.decorator';
 import { Public } from '../common/decorators/public.decorator';
+import { Request } from 'express';
 
 @ApiTags('Activities')
 @Controller({ path: 'activities', version: '1' })
@@ -21,8 +22,11 @@ export class ActivitiesController {
   @Get()
   @Public()
   @ApiOperation({ summary: 'List activities (cursor paginated)' })
-  findAll(@Query() query: { status?: string; timeline?: 'upcoming' | 'past'; city?: string; state?: string; lat?: string; lng?: string; radiusKm?: string; cursor?: string; limit?: number }) {
-    return this.activities.findAll(query as never);
+  findAll(
+    @Query() query: { status?: string; timeline?: 'upcoming' | 'past'; city?: string; state?: string; lat?: string; lng?: string; radiusKm?: string; cursor?: string; limit?: number },
+    @CurrentUser('sub') userId?: string,
+  ) {
+    return this.activities.findAll({ ...(query as any), userId });
   }
 
   @Get('nearby')
@@ -43,7 +47,9 @@ export class ActivitiesController {
   @Get(':id')
   @Public()
   @ApiOperation({ summary: 'Get activity by ID' })
-  findOne(@Param('id') id: string) { return this.activities.findOne(id); }
+  findOne(@Param('id') id: string, @CurrentUser('sub') userId?: string) {
+    return this.activities.findOne(id, userId);
+  }
 
   @Patch(':id')
   @ApiBearerAuth('access-token')
@@ -55,9 +61,14 @@ export class ActivitiesController {
   @Delete(':id')
   @ApiBearerAuth('access-token')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Cancel/delete activity (creator only)' })
-  remove(@CurrentUser('sub') userId: string, @Param('id') id: string) {
-    return this.activities.remove(userId, id);
+  @ApiOperation({ summary: 'Cancel/delete activity (creator or admin)' })
+  remove(
+    @CurrentUser() user: JwtPayload,
+    @Param('id') id: string,
+    @Body('reason') reason: string | undefined,
+    @Req() req: Request,
+  ) {
+    return this.activities.remove(user.sub, user.role, id, reason, req);
   }
 
   @Post(':id/join')

@@ -64,6 +64,7 @@ export class RecommendationsService {
     const activities = await this.prisma.activity.findMany({
       where: {
         status: 'ACTIVE',
+        scheduledAt: { gte: new Date() },
         isPrivate: false,
         deletedAt: null,
         activityInterests: interestIds.length ? { some: { interestId: { in: interestIds } } } : undefined,
