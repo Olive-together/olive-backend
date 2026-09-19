@@ -5,7 +5,7 @@
 
 generator client {
   provider        = "prisma-client-js"
-  previewFeatures = ["postgresqlExtensions"]
+  previewFeatures = ["postgresqlExtensions", "driverAdapters"]
 }
 
 datasource db {
@@ -233,6 +233,7 @@ model User {
   embedding         Embedding?
   paymentAccount    PaymentAccount?
   auditLogsActed    AuditLog[]           @relation("AuditActor")
+  notificationPrefs UserNotificationPrefs?
 
   @@index([email])
   @@index([username])
@@ -884,4 +885,25 @@ model Payment {
   @@index([paymentAccountId])
   @@index([status])
   @@map("payments")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// NOTIFICATION PREFERENCES
+// One row per user. Created lazily on first GET; updated via PATCH.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model UserNotificationPrefs {
+  id                  String   @id @default(uuid())
+  userId              String   @unique
+  activityJoins       Boolean  @default(true)
+  connectionRequests  Boolean  @default(true)
+  messages            Boolean  @default(true)
+  activityReminders   Boolean  @default(true)
+  recommendations     Boolean  @default(false)
+  ratings             Boolean  @default(true)
+  updatedAt           DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_notification_prefs")
 }
