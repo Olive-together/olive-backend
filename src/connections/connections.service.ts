@@ -138,9 +138,25 @@ export class ConnectionsService {
         status: ConnectionStatus.PENDING,
       },
       include: {
-        fromUser: { select: { id: true, username: true, profile: { select: { displayName: true, avatarUrl: true } } } },
-        toUser: { select: { id: true, username: true, profile: { select: { displayName: true, avatarUrl: true } } } },
+        fromUser: { select: { id: true, username: true, profile: { select: { displayName: true, avatarUrl: true, city: true } } } },
+        toUser: { select: { id: true, username: true, profile: { select: { displayName: true, avatarUrl: true, city: true } } } },
       },
     });
+  }
+
+  /** Find a single connection by ID — any party can view it */
+  async findById(userId: string, connectionId: string) {
+    const conn = await this.prisma.connection.findFirst({
+      where: {
+        id: connectionId,
+        OR: [{ fromUserId: userId }, { toUserId: userId }],
+      },
+      include: {
+        fromUser: { select: { id: true, username: true, profile: { select: { displayName: true, avatarUrl: true, city: true } } } },
+        toUser: { select: { id: true, username: true, profile: { select: { displayName: true, avatarUrl: true, city: true } } } },
+      },
+    });
+    if (!conn) throw new NotFoundException('Connection');
+    return conn;
   }
 }

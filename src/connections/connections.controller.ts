@@ -26,4 +26,7 @@ export class ConnectionsController {
 
   @Get('pending') @ApiOperation({ summary: 'List pending connection requests' })
   listPending(@CurrentUser('sub') userId: string) { return this.connections.listPending(userId); }
+
+  @Get(':id') @ApiOperation({ summary: 'Get a single connection by ID' })
+  findOne(@CurrentUser('sub') userId: string, @Param('id') id: string) { return this.connections.findById(userId, id); }
 }
