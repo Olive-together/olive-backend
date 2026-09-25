@@ -9,6 +9,7 @@ export class UpdateProfileDto {
   @ApiPropertyOptional() @IsOptional() @IsUrl() website?: string;
   @ApiPropertyOptional() @IsOptional() @IsString() linkedIn?: string;
   @ApiPropertyOptional() @IsOptional() @IsString() instagram?: string;
+  @ApiPropertyOptional() @IsOptional() @IsUrl() avatarUrl?: string;
 }
 
 export class AddSkillDto {

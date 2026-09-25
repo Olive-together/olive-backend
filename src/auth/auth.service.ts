@@ -4,7 +4,7 @@ import { JwtService } from '@nestjs/jwt';
 import type { StringValue } from 'ms';
 import { OAuthProvider, UserRole, UserStatus } from '@prisma/client';
 import * as argon2 from 'argon2';
-import { Resend } from 'resend';
+import * as nodemailer from 'nodemailer';
 import { PrismaService } from '../prisma/prisma.service';
 import { RedisService } from '../redis/redis.service';
 import {
@@ -67,9 +67,14 @@ export class AuthService {
       where: { OR: [{ email: dto.email }, { username: dto.username }] },
     });
     if (existing) {
-      throw new ConflictException(
-        existing.email === dto.email ? 'Email already registered' : 'Username already taken',
-      );
+      if (existing.status === UserStatus.PENDING_VERIFICATION) {
+        // Clean up the abandoned unverified account to allow re-registration
+        await this.prisma.user.delete({ where: { id: existing.id } });
+      } else {
+        throw new ConflictException(
+          existing.email === dto.email ? 'Email already registered' : 'Username already taken',
+        );
+      }
     }
 
     const passwordHash = await argon2.hash(dto.password, { type: argon2.argon2id });
@@ -99,18 +104,32 @@ export class AuthService {
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
     await this.redis.set(`${OTP_PREFIX}${email}`, otp, 600); // 10 min TTL
     
-    const resendKey = this.config.get<string>('RESEND_API_KEY') || process.env.RESEND_API_KEY;
-    
-    if (resendKey) {
+    const smtpHost = this.config.get<string>('SMTP_HOST') || process.env.SMTP_HOST;
+    const smtpPort = this.config.get<number>('SMTP_PORT') || parseInt(process.env.SMTP_PORT || '587', 10);
+    const smtpUser = this.config.get<string>('SMTP_USER') || process.env.SMTP_USER;
+    const smtpPassword = this.config.get<string>('SMTP_PASSWORD') || process.env.SMTP_PASSWORD;
+    const fromEmail = this.config.get<string>('SMTP_FROM_EMAIL') || process.env.SMTP_FROM_EMAIL || 'noreply@letsdotogether.app';
+    const fromName = this.config.get<string>('SMTP_FROM_NAME') || process.env.SMTP_FROM_NAME || 'LetsDoTogether';
+
+    if (smtpHost && smtpUser && smtpPassword) {
       try {
-        const resend = new Resend(resendKey);
-        await resend.emails.send({
-          from: this.config.get<string>('EMAIL_FROM') ?? 'noreply@letsdotogether.app',
+        const transporter = nodemailer.createTransport({
+          host: smtpHost,
+          port: smtpPort,
+          secure: smtpPort === 465, // true for 465, false for other ports
+          auth: {
+            user: smtpUser,
+            pass: smtpPassword,
+          },
+        });
+
+        await transporter.sendMail({
+          from: `"${fromName}" <${fromEmail}>`,
           to: email,
           subject: 'Your Verification Code - LetsDoTogether',
           html: `<p>Welcome to LetsDoTogether!</p><p>Your verification code is: <strong>${otp}</strong></p><p>This code will expire in 10 minutes.</p>`,
         });
-        this.logger.log(`OTP email sent to ${email} via Resend`);
+        this.logger.log(`OTP email sent to ${email} via SMTP`);
       } catch (err) {
         this.logger.error(`Failed to send OTP email to ${email}`, err);
         // Fallback to logging in dev if it fails
