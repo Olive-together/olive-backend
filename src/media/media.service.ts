@@ -4,6 +4,7 @@ import { v2 as cloudinary } from 'cloudinary';
 import { PrismaService } from '../prisma/prisma.service';
 import { ForbiddenException, NotFoundException } from '../common/exceptions/app.exception';
 import { MediaEntityType } from '@prisma/client';
+import { ProfilesService } from '../profiles/profiles.service';
 
 export abstract class MediaStorageService {
   abstract generateUploadSignature(folder: string, publicId?: string): Record<string, unknown>;
@@ -50,6 +51,7 @@ export class MediaService {
   constructor(
     private readonly storage: CloudinaryMediaStorageService,
     private readonly prisma: PrismaService,
+    private readonly profilesService: ProfilesService,
   ) {}
 
   getUploadSignature(entityType: MediaEntityType, userId: string) {
@@ -72,7 +74,7 @@ export class MediaService {
       resourceType?: string;
     },
   ) {
-    return this.prisma.mediaAsset.create({
+    const mediaAsset = await this.prisma.mediaAsset.create({
       data: {
         userId,
         publicId: dto.publicId,
@@ -87,6 +89,12 @@ export class MediaService {
         resourceType: dto.resourceType ?? 'image',
       },
     });
+    
+    if (dto.entityType === MediaEntityType.PROFILE_AVATAR) {
+      await this.profilesService.updateMyProfile(userId, { avatarUrl: dto.secureUrl });
+    }
+    
+    return mediaAsset;
   }
 
   async deleteMedia(userId: string, mediaId: string) {
