@@ -18,6 +18,7 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
       // Only send password if it's actually set — avoids auth errors on no-auth Redis
       password: password && password.trim() !== '' ? password : undefined,
       db:       this.config.get<number>('redis.db') ?? 0,
+      tls:      this.config.get('redis.tls'),
 
       // ── Connection resilience ──────────────────────────────────────────────
       lazyConnect:        true,
