@@ -7,6 +7,8 @@ COPY package*.json ./
 RUN npm ci --ignore-scripts
 
 COPY . .
+# Generate Prisma client before building (needed because --ignore-scripts skips postinstall)
+RUN npx prisma generate
 RUN npm run build
 
 # Development stage

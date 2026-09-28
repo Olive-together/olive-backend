@@ -23,9 +23,12 @@ export class ActivitiesController {
   @Public()
   @ApiOperation({ summary: 'List activities (cursor paginated)' })
   findAll(
-    @Query() query: { status?: string; timeline?: 'upcoming' | 'past'; city?: string; state?: string; lat?: string; lng?: string; radiusKm?: string; cursor?: string; limit?: number },
-    @CurrentUser('sub') userId?: string,
+    @Query() query: { status?: string; timeline?: 'upcoming' | 'past'; city?: string; state?: string; lat?: string; lng?: string; radiusKm?: string; cursor?: string; limit?: number; userId?: string },
+    @CurrentUser('sub') jwtUserId?: string,
   ) {
+    // On @Public routes the JWT guard skips Passport validation, so @CurrentUser always returns
+    // undefined even if a valid token was sent. Fall back to the userId query param the client sends.
+    const userId = jwtUserId ?? query.userId;
     return this.activities.findAll({ ...(query as any), userId });
   }
 

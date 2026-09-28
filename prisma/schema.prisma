@@ -498,6 +498,8 @@ model Activity {
   expiresAt        DateTime?
   coverUrl         String?
   tags             String[]
+  isFree           Boolean                               @default(true)
+  price            Decimal?                              @db.Decimal(10, 2)
   searchVector     Unsupported("tsvector")?
   createdAt        DateTime                              @default(now())
   updatedAt        DateTime                              @updatedAt

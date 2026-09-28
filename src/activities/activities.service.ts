@@ -40,6 +40,8 @@ export interface CreateActivityDto {
   tags?: string[];
   interestIds?: string[];
   skillIds?: string[];
+  isFree?: boolean;
+  price?: number;
 }
 
 @Injectable()
@@ -81,6 +83,8 @@ export class ActivitiesService {
         endsAt: dto.endsAt ? new Date(dto.endsAt) : undefined,
         expiresAt: dto.expiresAt ? new Date(dto.expiresAt) : undefined,
         tags,
+        isFree: dto.isFree !== undefined ? dto.isFree : true,
+        price: dto.price !== undefined ? dto.price : null,
         status: ActivityStatus.ACTIVE,
         activityInterests: dto.interestIds?.length
           ? { create: dto.interestIds.map((id) => ({ interestId: id })) }
@@ -318,6 +322,8 @@ export class ActivitiesService {
         country: dto.country,
         scheduledAt: dto.scheduledAt ? new Date(dto.scheduledAt) : undefined,
         tags: dto.tags,
+        isFree: dto.isFree !== undefined ? dto.isFree : undefined,
+        price: dto.price !== undefined ? dto.price : undefined,
       },
     });
   }
