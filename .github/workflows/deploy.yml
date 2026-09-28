@@ -1,0 +1,75 @@
+name: Deploy Backend to Cloud Run
+
+on:
+  push:
+    branches:
+      - main
+
+env:
+  PROJECT_ID: olive-510007
+  REGION: asia-south1
+  SERVICE: letsdotogether-backend
+  IMAGE: asia-south1-docker.pkg.dev/olive-510007/letsdotogether-repo/backend
+
+jobs:
+  deploy:
+    name: Build & Deploy
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. Checkout
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 2. Authenticate to GCP
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      # 3. Set up gcloud CLI
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      # 4. Configure Docker for Artifact Registry
+      - name: Configure Docker
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      # 5. Build Docker image (production stage)
+      - name: Build Docker image
+        run: |
+          docker build \
+            --target production \
+            --tag ${{ env.IMAGE }}:${{ github.sha }} \
+            --tag ${{ env.IMAGE }}:latest \
+            .
+
+      # 6. Push to Artifact Registry
+      - name: Push Docker image
+        run: |
+          docker push ${{ env.IMAGE }}:${{ github.sha }}
+          docker push ${{ env.IMAGE }}:latest
+
+      # 7. Deploy to Cloud Run
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy ${{ env.SERVICE }} \
+            --image=${{ env.IMAGE }}:${{ github.sha }} \
+            --platform=managed \
+            --region=${{ env.REGION }} \
+            --project=${{ env.PROJECT_ID }} \
+            --port=3000 \
+            --allow-unauthenticated \
+            --min-instances=0 \
+            --max-instances=10 \
+            --memory=512Mi \
+            --cpu=1 \
+            --set-secrets="NODE_ENV=NODE_ENV:latest,APP_PORT=APP_PORT:latest,APP_URL=APP_URL:latest,FRONTEND_URL=FRONTEND_URL:latest,DATABASE_URL=DATABASE_URL:latest,DIRECT_URL=DIRECT_URL:latest,REDIS_HOST=REDIS_HOST:latest,REDIS_PORT=REDIS_PORT:latest,REDIS_PASSWORD=REDIS_PASSWORD:latest,REDIS_DB=REDIS_DB:latest,REDIS_TLS=REDIS_TLS:latest,JWT_ACCESS_SECRET=JWT_ACCESS_SECRET:latest,JWT_ACCESS_EXPIRY=JWT_ACCESS_EXPIRY:latest,JWT_REFRESH_SECRET=JWT_REFRESH_SECRET:latest,JWT_REFRESH_EXPIRY=JWT_REFRESH_EXPIRY:latest,JWT_EMAIL_VERIFY_SECRET=JWT_EMAIL_VERIFY_SECRET:latest,JWT_EMAIL_VERIFY_EXPIRY=JWT_EMAIL_VERIFY_EXPIRY:latest,JWT_PASSWORD_RESET_SECRET=JWT_PASSWORD_RESET_SECRET:latest,JWT_PASSWORD_RESET_EXPIRY=JWT_PASSWORD_RESET_EXPIRY:latest,GOOGLE_CLIENT_ID=GOOGLE_CLIENT_ID:latest,GOOGLE_CLIENT_SECRET=GOOGLE_CLIENT_SECRET:latest,GOOGLE_CALLBACK_URL=GOOGLE_CALLBACK_URL:latest,EMAIL_PROVIDER=EMAIL_PROVIDER:latest,EMAIL_FROM=EMAIL_FROM:latest,EMAIL_FROM_NAME=EMAIL_FROM_NAME:latest,SMTP_HOST=SMTP_HOST:latest,SMTP_PORT=SMTP_PORT:latest,SMTP_USER=SMTP_USER:latest,SMTP_PASSWORD=SMTP_PASSWORD:latest,SMTP_FROM_EMAIL=SMTP_FROM_EMAIL:latest,SMTP_FROM_NAME=SMTP_FROM_NAME:latest,RESEND_API_KEY=RESEND_API_KEY:latest,CLOUDINARY_CLOUD_NAME=CLOUDINARY_CLOUD_NAME:latest,CLOUDINARY_API_KEY=CLOUDINARY_API_KEY:latest,CLOUDINARY_API_SECRET=CLOUDINARY_API_SECRET:latest,THROTTLE_TTL_MS=THROTTLE_TTL_MS:latest,THROTTLE_LIMIT=THROTTLE_LIMIT:latest,LOG_LEVEL=LOG_LEVEL:latest,LOG_PRETTY=LOG_PRETTY:latest"
+
+      # 8. Print deployed URL
+      - name: Get Service URL
+        run: |
+          gcloud run services describe ${{ env.SERVICE }} \
+            --region=${{ env.REGION }} \
+            --project=${{ env.PROJECT_ID }} \
+            --format="value(status.url)"
