@@ -7,3 +7,4 @@ coverage/
 .env.production
 *.tsbuildinfo
 prisma/migrations/
+key.json

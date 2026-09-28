@@ -146,25 +146,7 @@ export class AuthController {
     const frontendUrl = this.config.get<string>('app.frontendUrl') ?? 'http://localhost:5173';
     const isProd = this.config.get<string>('app.nodeEnv') === 'production';
 
-    // Store refresh token in a Secure HttpOnly cookie (same as the existing refresh flow)
-    res.cookie('refresh_token', tokens.refreshToken, {
-      httpOnly: true,
-      secure: isProd,
-      sameSite: isProd ? 'strict' : 'lax',
-      maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
-      path: '/',
-    });
-
-    // Store access token in a short-lived readable cookie so the frontend
-    // can pick it up once, then store in memory (not localStorage).
-    res.cookie('oauth_access_token', tokens.accessToken, {
-      httpOnly: false,   // intentionally readable by JS (one-time pickup)
-      secure: isProd,
-      sameSite: isProd ? 'strict' : 'lax',
-      maxAge: 60 * 1000, // 1 minute — frontend must pick this up quickly
-      path: '/',
-    });
-
-    res.redirect(`${frontendUrl}/auth/callback`);
+    // Pass tokens in URL query string (since frontend is cross-domain and manages tokens in localStorage)
+    res.redirect(`${frontendUrl}/auth/callback?access_token=${tokens.accessToken}&refresh_token=${tokens.refreshToken}`);
   }
 }
