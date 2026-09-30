@@ -72,6 +72,44 @@ Indicate the specific part of the app you worked on.
 
 ---
 
+## Google OAuth — Local Development
+
+Production and local development use **different** OAuth configurations.
+
+> ⚠️ **Never** share the production Google OAuth credentials publicly or commit them to the repository.
+
+### Setup
+
+For local development, create your own Google OAuth credentials in Google Cloud and configure a `localhost` callback URL.
+
+Example `.env.local`:
+
+```env
+GOOGLE_CLIENT_ID=your-local-client-id
+GOOGLE_CLIENT_SECRET=your-local-client-secret
+GOOGLE_CALLBACK_URL=http://localhost:3000/api/v1/auth/google/callback
+```
+
+### Important Notes
+
+- The callback URL must **exactly match** the authorized redirect URI configured for your Google OAuth client.
+- Check the existing authentication implementation for the exact callback route before configuring Google Cloud.
+- Each contributor should use their **own** local OAuth credentials rather than sharing production credentials.
+
+### Do Not Commit
+
+Make sure the following are never committed to the repository:
+
+- `.env`
+- `.env.local`
+- `client_secret.json`
+- Google OAuth secrets
+- JWT secrets
+- Database credentials
+- Redis credentials
+- Cloudinary secrets
+- API keys
+
 ## 🚀 Workflow Summary
 
 1. **Pull the latest `develop` branch:**
