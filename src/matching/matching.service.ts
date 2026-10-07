@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { PeopleVisibilityService } from '../people/people-visibility.service';
 
 export interface MatchingConfig {
   interestWeight: number;
@@ -32,7 +33,6 @@ export interface ViewerContext {
   longitude?: number;
 }
 
-@Injectable()
 export class DefaultRankingStrategy implements RankingStrategy {
   constructor(private readonly config: MatchingConfig) {}
 
@@ -63,7 +63,10 @@ export class MatchingService {
     maxDistanceKm: 50,
   };
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly peopleVisibility: PeopleVisibilityService,
+  ) {}
 
   async getCandidates(
     userId: string,
@@ -78,28 +81,24 @@ export class MatchingService {
     const limit = options.limit ?? 20;
     const radiusKm = options.radiusKm ?? this.defaultConfig.maxDistanceKm;
 
+    // ── ACTIVITY-BASED VISIBILITY GATE ──────────────────────────────────────
+    // Only consider users the viewer has a shared-activity relationship with.
+    const visibleUserIds = await this.peopleVisibility.getVisibleUserIds(userId);
+    if (visibleUserIds.length === 0) {
+      return { items: [], hasMore: false };
+    }
+    // ────────────────────────────────────────────────────────────────────────
+
     // Get viewer context
-    const [viewerInterests, viewerSkills, viewer] = await Promise.all([
+    const [viewerInterests, viewerSkills] = await Promise.all([
       this.prisma.userInterest.findMany({ where: { userId }, select: { interestId: true } }),
       this.prisma.userSkill.findMany({ where: { userId }, select: { skillId: true } }),
-      this.prisma.user.findUnique({
-        where: { id: userId },
-        include: { location: true, profile: true },
-      }),
     ]);
 
     const viewerInterestIds = viewerInterests.map((i) => i.interestId);
     const viewerSkillIds = viewerSkills.map((s) => s.skillId);
 
-    // Hard filter (SQL): active users, not blocked, not self, with discovery enabled
-    const blockedIds = await this.prisma.block.findMany({
-      where: { OR: [{ blockerId: userId }, { blockedUserId: userId }] },
-      select: { blockerId: true, blockedUserId: true },
-    });
-    const blockedUserIds = [
-      ...new Set(blockedIds.flatMap((b) => [b.blockerId, b.blockedUserId])),
-    ].filter((id) => id !== userId);
-
+    // Build SQL restricted to the visible user set
     let candidatesQuery = `
       SELECT DISTINCT u.id, u.username,
              p.completeness_score,
@@ -112,24 +111,17 @@ export class MatchingService {
       JOIN profiles p ON p.user_id = u.id
       LEFT JOIN user_locations ul ON ul.user_id = u.id
       LEFT JOIN reputation_summaries rs ON rs.user_id = u.id
-      WHERE u.id != $3
+      WHERE u.id = ANY($3::uuid[])
         AND u.status = 'ACTIVE'
         AND u.deleted_at IS NULL
-        AND p.discovery_enabled = true
     `;
 
     const params: unknown[] = [
       options.longitude ?? 0,
       options.latitude ?? 0,
-      userId,
+      visibleUserIds,
     ];
     let paramIdx = 4;
-
-    if (blockedUserIds.length > 0) {
-      candidatesQuery += ` AND u.id NOT IN (${blockedUserIds.map((_, i) => `$${paramIdx + i}`).join(',')})`;
-      params.push(...blockedUserIds);
-      paramIdx += blockedUserIds.length;
-    }
 
     if (options.latitude && options.longitude) {
       candidatesQuery += ` AND (ul.coordinates IS NULL OR ST_DWithin(ul.coordinates::geography, ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography, $${paramIdx}))`;

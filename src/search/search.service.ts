@@ -1,13 +1,21 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { PeopleVisibilityService } from '../people/people-visibility.service';
 
 @Injectable()
 export class SearchService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly peopleVisibility: PeopleVisibilityService,
+  ) {}
 
-  async searchAll(query: string, limit = 20) {
+  /**
+   * Unified search across activities, skills, and interests.
+   * User search is scoped to the requester's visible users only.
+   */
+  async searchAll(query: string, requesterId: string, limit = 20) {
     const [users, activities, skills, interests] = await Promise.all([
-      this.searchUsers(query, limit),
+      this.searchUsers(query, requesterId, limit),
       this.searchActivities(query, limit),
       this.searchSkills(query, limit),
       this.searchInterests(query, limit),
@@ -15,23 +23,30 @@ export class SearchService {
     return { users, activities, skills, interests };
   }
 
-  async searchUsers(query: string, limit = 20) {
+  /**
+   * Search users — restricted to activity-based visible users only.
+   * A user who has never shared an activity with the requester will NOT appear.
+   */
+  async searchUsers(query: string, requesterId: string, limit = 20) {
+    // Resolve the set of users the requester can see
+    const visibleIds = await this.peopleVisibility.getVisibleUserIds(requesterId);
+
+    if (visibleIds.length === 0) return [];
+
     return this.prisma.user.findMany({
       where: {
+        id: { in: visibleIds },
         status: 'ACTIVE',
         deletedAt: null,
-        profile: { discoveryEnabled: true },
         OR: [
           { username: { contains: query, mode: 'insensitive' } },
           { profile: { displayName: { contains: query, mode: 'insensitive' } } },
-          { userInterests: { some: { interest: { name: { contains: query, mode: 'insensitive' } } } } },
-          { userSkills: { some: { skill: { name: { contains: query, mode: 'insensitive' } } } } },
         ],
       },
       select: {
         id: true,
         username: true,
-        profile: { select: { displayName: true, avatarUrl: true } },
+        profile: { select: { displayName: true, avatarUrl: true, city: true } },
       },
       take: limit,
     });
@@ -47,11 +62,17 @@ export class SearchService {
           { title: { contains: query, mode: 'insensitive' } },
           { description: { contains: query, mode: 'insensitive' } },
           { city: { contains: query, mode: 'insensitive' } },
-          { tags: { has: query } }
+          { tags: { has: query } },
         ],
       },
       include: {
-        creator: { select: { id: true, username: true, profile: { select: { displayName: true, avatarUrl: true } } } },
+        creator: {
+          select: {
+            id: true,
+            username: true,
+            profile: { select: { displayName: true, avatarUrl: true } },
+          },
+        },
       },
       take: limit,
     });
