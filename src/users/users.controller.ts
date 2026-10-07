@@ -67,8 +67,7 @@ export class UsersController {
   }
 
   @Get(':username')
-  @Public()
-  @ApiOperation({ summary: 'Get public profile by username' })
+  @ApiOperation({ summary: 'Get profile by username (activity-based access only)' })
   getPublicProfile(
     @Param('username') username: string,
     @CurrentUser('sub') requesterId: string,

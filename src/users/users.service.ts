@@ -3,10 +3,14 @@ import { PrismaService } from '../prisma/prisma.service';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { NotFoundException, ForbiddenException, BadRequestException } from '../common/exceptions/app.exception';
 import { ConnectionStatus, UserStatus } from '@prisma/client';
+import { PeopleVisibilityService } from '../people/people-visibility.service';
 
 @Injectable()
 export class UsersService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly peopleVisibility: PeopleVisibilityService,
+  ) {}
 
   async getMe(userId: string) {
     const user = await this.prisma.user.findUnique({
@@ -152,12 +156,12 @@ export class UsersService {
       },
     });
 
-    if (!user || user.deletedAt || user.status === UserStatus.BANNED) {
+    if (!user || user.deletedAt || user.status === UserStatus.BANNED || user.status === UserStatus.SUSPENDED) {
       throw new NotFoundException('User');
     }
 
-    // Check block
     if (requesterId) {
+      // Check block first
       const block = await this.prisma.block.findFirst({
         where: {
           OR: [
@@ -167,6 +171,15 @@ export class UsersService {
         },
       });
       if (block) throw new ForbiddenException('User not available');
+
+      // Enforce activity-based visibility — deny access unless they share an activity
+      if (requesterId !== user.id) {
+        const canView = await this.peopleVisibility.canViewUser(requesterId, user.id);
+        if (!canView) throw new ForbiddenException('Profile not accessible');
+      }
+    } else {
+      // Unauthenticated requests cannot see any profile
+      throw new ForbiddenException('Authentication required to view profiles');
     }
 
     const connectionsCount = await this.prisma.connection.count({

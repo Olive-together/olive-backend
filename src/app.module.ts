@@ -16,6 +16,7 @@ import { MatchingModule } from './matching/matching.module';
 import { RecommendationsModule } from './recommendations/recommendations.module';
 import { SearchModule } from './search/search.module';
 import { ConnectionsModule } from './connections/connections.module';
+import { PeopleModule } from './people/people.module';
 import { ChatModule } from './chat/chat.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { JobsModule } from './jobs/jobs.module';
@@ -24,6 +25,7 @@ import { RatingsModule } from './ratings/ratings.module';
 import { BlocksModule } from './blocks/blocks.module';
 import { ReportsModule } from './reports/reports.module';
 import { ModerationModule } from './moderation/moderation.module';
+import { EmailModule } from './email/email.module';
 import { AdminModule } from './admin/admin.module';
 import { AiModule } from './ai/ai.module';
 import { PaymentsModule } from './payments/payments.module';
@@ -64,6 +66,7 @@ import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
     RecommendationsModule,
     SearchModule,
     ConnectionsModule,
+    PeopleModule,
     ChatModule,
     NotificationsModule,
     JobsModule,
@@ -72,6 +75,7 @@ import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
     BlocksModule,
     ReportsModule,
     ModerationModule,
+    EmailModule,
     AdminModule,
     AiModule,
     PaymentsModule,
