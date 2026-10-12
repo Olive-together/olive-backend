@@ -8,3 +8,10 @@ coverage/
 *.tsbuildinfo
 prisma/migrations/
 key.json
+
+# Deployment & secret scripts
+scripts/set-cloudrun-envvars.sh
+*.sh
+# Scratch / debug files
+test.js
+check-dates.js
